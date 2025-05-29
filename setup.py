@@ -4,7 +4,7 @@ setup(
     name="steam-screenshots-viewer",
     version="1.0.0",
     description="A modern viewer for Steam screenshots with a Steam-like interface",
-    author="Steam Screenshots Viewer Team",
+    author="Kenny Preston",
     packages=find_packages(),
     install_requires=[
         "PyQt6>=6.0.0"
