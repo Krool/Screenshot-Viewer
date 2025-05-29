@@ -999,6 +999,7 @@ class SteamScreenshotsViewer(QMainWindow):
         
         # Create loading overlay
         self.loading_overlay = LoadingOverlay(self)
+        self.loading_overlay.hide()  # Ensure it starts hidden
         
         # Create full screen preview window
         self.full_screen_preview = FullScreenPreview()
@@ -1218,6 +1219,10 @@ class SteamScreenshotsViewer(QMainWindow):
                     self.tab_widget.removeTab(1)
                 self.game_tabs.clear()
                 self.populate_screenshots(self.load_screenshot_paths())
+                
+                # Apply both sorting methods after refresh
+                self.sort_game_tabs()
+                self.sort_screenshots()
             finally:
                 self.loading_overlay.hide()
 
@@ -1259,8 +1264,18 @@ class SteamScreenshotsViewer(QMainWindow):
         """Populate list widgets with screenshots"""
         DebugConsole.log(f"Populating {len(screenshots)} screenshots")
         
+        # Show loading overlay with progress
+        if hasattr(self, 'loading_overlay'):
+            self.loading_overlay.show()
+            self.loading_overlay.set_progress(0, len(screenshots))
+            QApplication.processEvents()  # Force UI update
+        
         for i, screenshot in enumerate(screenshots, 1):
             try:
+                # Update progress
+                if hasattr(self, 'loading_overlay'):
+                    self.loading_overlay.set_progress(i, len(screenshots))
+                
                 # Extract game_id from path
                 game_id = screenshot.split("remote\\")[1].split("\\")[0]
                 
@@ -1289,7 +1304,9 @@ class SteamScreenshotsViewer(QMainWindow):
         if hasattr(self, 'loading_overlay'):
             self.loading_overlay.close()
             
-        self.sort_game_tabs()  # Add this line to sort tabs after population
+        # Trigger sorting after population is complete
+        self.sort_game_tabs()
+        self.sort_screenshots()
 
     def copy_image(self):
         if self.current_screenshot:
@@ -1340,27 +1357,47 @@ class SteamScreenshotsViewer(QMainWindow):
         self.edit_game_name_button.setVisible("Unknown Game" in game_name)
 
     def save_preferences(self):
-        config_path = os.path.join(os.getenv('APPDATA'), 'Game Screenshot Viewer', 'config.json')
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, 'w') as f:
-            json.dump({
-                "game_sort_order": self.game_sort_combo.currentText(),
-                "screenshot_sort_order": self.screenshot_sort_combo.currentText()
-            }, f)
+        """Save game data to cache file"""
+        try:
+            cache_dir = os.path.join(os.getenv('APPDATA'), 'Game Screenshot Viewer')
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+            with open(os.path.join(cache_dir, 'config.json'), 'w') as f:
+                json.dump({
+                    "game_sort_order": self.game_sort_combo.currentText(),
+                    "screenshot_sort_order": self.screenshot_sort_combo.currentText()
+                }, f)
+        except Exception as e:
+            self.logger.error(f"Error saving preferences: {e}")
 
     def load_preferences(self):
-        config_path = os.path.join(os.getenv('APPDATA'), 'Game Screenshots', 'config.json')
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                if "game_sort_order" in config:
-                    index = self.game_sort_combo.findText(config["game_sort_order"])
+        """Load game data from cache file"""
+        try:
+            config_path = os.path.join(os.getenv('APPDATA'), 'Game Screenshot Viewer', 'config.json')
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    
+                    # Set game sort order
+                    game_sort = config.get("game_sort_order", "Newest")
+                    index = self.game_sort_combo.findText(game_sort)
                     if index >= 0:
                         self.game_sort_combo.setCurrentIndex(index)
-                if "screenshot_sort_order" in config:
-                    index = self.screenshot_sort_combo.findText(config["screenshot_sort_order"])
+                    else:
+                        self.game_sort_combo.setCurrentIndex(0)  # Default to Newest
+                    
+                    # Set screenshot sort order
+                    screenshot_sort = config.get("screenshot_sort_order", "Newest")
+                    index = self.screenshot_sort_combo.findText(screenshot_sort)
                     if index >= 0:
                         self.screenshot_sort_combo.setCurrentIndex(index)
+                    else:
+                        self.screenshot_sort_combo.setCurrentIndex(0)  # Default to Newest
+        except Exception as e:
+            # Use defaults if loading fails
+            self.game_sort_combo.setCurrentIndex(0)  # Newest
+            self.screenshot_sort_combo.setCurrentIndex(0)  # Newest
+            self.logger.error(f"Error loading preferences: {e}")
 
     def closeEvent(self, event):
         self.save_preferences()
