@@ -2,6 +2,20 @@ import os
 import sys
 import logging
 
+# Enhanced debug output system
+class DebugConsole:
+    @staticmethod
+    def log(*args, **kwargs):
+        """Log to console only when not running as a bundled executable"""
+        if not getattr(sys, 'frozen', False):
+            print("[DEBUG]", *args, **kwargs)
+    
+    @staticmethod
+    def error(*args, **kwargs):
+        """Log errors to console only when not bundled"""
+        if not getattr(sys, 'frozen', False):
+            print("[ERROR]", *args, file=sys.stderr, **kwargs)
+
 # Completely suppress console output when frozen
 if getattr(sys, 'frozen', False):
     sys.stdout = open(os.devnull, 'w')
@@ -31,7 +45,8 @@ import glob
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QListWidget, QLabel, QScrollArea, QListWidgetItem,
                             QPushButton, QHBoxLayout, QLineEdit, QMessageBox,
-                            QSplitter, QTabWidget, QFrame, QProgressBar, QComboBox)
+                            QSplitter, QTabWidget, QFrame, QProgressBar, QComboBox,
+                            QSizePolicy)
 from PyQt6.QtGui import (QPixmap, QImage, QIcon, QPalette, QColor, QFont, 
                         QCursor, QMovie, QTransform, QGuiApplication)
 from PyQt6.QtCore import (Qt, QSize, QTimer, QPropertyAnimation, QPoint, 
@@ -139,6 +154,7 @@ class LoadingOverlay(QWidget):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(value)
         self.loading_text.setText(f"Loading Screenshots... ({value}/{total})")
+        QApplication.processEvents()  # Force UI update
     
     def center_in_parent(self):
         if self.parentWidget():
@@ -152,6 +168,7 @@ class LoadingOverlay(QWidget):
     
     def showEvent(self, event):
         super().showEvent(event)
+        self.raise_()  # Ensure overlay stays on top
         self.center_in_parent()
     
     def resizeEvent(self, event):
@@ -607,9 +624,63 @@ class FullScreenPreview(QWidget):
     def close_preview(self, event):
         self.close()
 
+class Toast(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        
+        # Create layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Create container widget with background
+        self.container = QWidget()
+        self.container.setStyleSheet("""
+            QWidget {
+                background-color: #1b2838;
+                border: 1px solid #66c0f4;
+                border-radius: 5px;
+                padding: 8px;
+            }
+        """)
+        
+        # Add label for message
+        self.message_label = QLabel()
+        self.message_label.setStyleSheet("""
+            color: #c7d5e0;
+            font-size: 12px;
+        """)
+        
+        container_layout = QVBoxLayout(self.container)
+        container_layout.addWidget(self.message_label)
+        layout.addWidget(self.container)
+        
+        # Set up animation
+        self.animation = QPropertyAnimation(self, b"windowOpacity")
+        self.animation.setDuration(2000)  # 2 seconds
+        self.animation.setStartValue(1.0)
+        self.animation.setEndValue(0.0)
+        self.animation.finished.connect(self.close)
+        
+        # Center on parent
+        if parent:
+            self.move(
+                parent.width() - self.width() - 20,
+                parent.height() - self.height() - 20
+            )
+    
+    def show_message(self, message):
+        self.message_label.setText(message)
+        self.adjustSize()
+        self.show()
+        self.animation.start()
+
 class SteamScreenshotsViewer(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.is_sorting = False  # Add sorting lock flag
         self.logger = logging.getLogger('SteamScreenshotsViewer')
         
         # Initialize attributes
@@ -629,53 +700,83 @@ class SteamScreenshotsViewer(QMainWindow):
         self.main_layout.setSpacing(0)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create compact header (removed all toolbar references)
+        # Header layout reorganization
         header_widget = QWidget()
         header_widget.setFixedHeight(40)
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(5, 0, 5, 0)
         header_layout.setSpacing(10)
+
+        # Game sorting group
+        game_sort_group = QWidget()
+        game_sort_layout = QHBoxLayout(game_sort_group)
+        game_sort_layout.setContentsMargins(0, 0, 0, 0)
+        game_sort_layout.setSpacing(5)
         
-        # Add sort dropdown
-        self.sort_order_combo = QComboBox()
-        self.sort_order_combo.addItems(["Most Recent", "Oldest", "By Size"])
-        self.sort_order_combo.setFixedWidth(120)
-        self.sort_order_combo.setStyleSheet("""
+        game_label = QLabel("Sort Categories:")
+        game_label.setStyleSheet("color: #c7d5e0; font-size: 12px;")
+        game_sort_layout.addWidget(game_label)
+        
+        self.game_sort_combo = QComboBox()
+        self.game_sort_combo.addItems(["Newest", "Oldest", "A to Z", "Z to A", "Screenshot Count"])
+        self.game_sort_combo.setFixedWidth(120)
+        self.game_sort_combo.setStyleSheet("""
             QComboBox {
+                color: #c7d5e0;
                 background-color: #2a475e;
-                color: #ffffff;
                 border: 1px solid #66c0f4;
-                padding: 3px;
+                padding: 2px;
             }
-            QComboBox:hover {
-                border: 1px solid #c7d5e0;
+            QComboBox QAbstractItemView {
+                color: #c7d5e0;
+                background-color: #2a475e;
+                selection-background-color: #66c0f4;
             }
         """)
-        self.sort_order_combo.currentTextChanged.connect(self.apply_sort)
-        header_layout.addWidget(self.sort_order_combo)
+        game_sort_layout.addWidget(self.game_sort_combo)
         
-        # Add status label
-        self.status_label = QLabel("Loading...")
-        self.status_label.setStyleSheet("""
-            color: #c7d5e0; 
-            font-size: 13px;
-            padding: 0 5px;
+        # Add screenshot sorting dropdown
+        screenshot_label = QLabel("Sort Screenshots:")
+        screenshot_label.setStyleSheet("color: #c7d5e0; font-size: 12px;")
+        game_sort_layout.addWidget(screenshot_label)
+        
+        self.screenshot_sort_combo = QComboBox()
+        self.screenshot_sort_combo.addItems(["Newest", "Oldest", "A to Z", "Z to A", "Largest", "Smallest"])
+        self.screenshot_sort_combo.setCurrentIndex(0)  # Default to 'Newest First'
+        self.screenshot_sort_combo.setFixedWidth(120)
+        self.screenshot_sort_combo.setStyleSheet("""
+            QComboBox {
+                color: #c7d5e0;
+                background-color: #2a475e;
+                border: 1px solid #66c0f4;
+                padding: 2px;
+            }
+            QComboBox QAbstractItemView {
+                color: #c7d5e0;
+                background-color: #2a475e;
+                selection-background-color: #66c0f4;
+            }
         """)
-        header_layout.addWidget(self.status_label)
+        game_sort_layout.addWidget(self.screenshot_sort_combo)
+        self.screenshot_sort_combo.currentIndexChanged.connect(self.sort_screenshots)
+        self.game_sort_combo.currentIndexChanged.connect(self.sort_game_tabs)
         
-        # Add stretch spacer
-        header_layout.addStretch()
+        header_layout.addWidget(game_sort_group)
+
+        # Status label
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #c7d5e0;")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        header_layout.addWidget(self.status_label, stretch=1)
         
-        # Add refresh button
+        # Refresh button
         self.refresh_button = QPushButton("⟳ Refresh")
-        self.refresh_button.setFixedSize(80, 24)
         self.refresh_button.setStyleSheet("""
             QPushButton {
-                background-color: #2a475e;
                 color: #c7d5e0;
-                border: none;
-                border-radius: 3px;
-                font-size: 12px;
+                background-color: #2a475e;
+                border: 1px solid #66c0f4;
+                padding: 4px 8px;
             }
             QPushButton:hover {
                 background-color: #66c0f4;
@@ -684,10 +785,7 @@ class SteamScreenshotsViewer(QMainWindow):
         """)
         self.refresh_button.clicked.connect(self.refresh_screenshots)
         header_layout.addWidget(self.refresh_button)
-        
-        # Add header to main layout
-        self.main_layout.addWidget(header_widget)
-        
+
         # Create main splitter
         self.main_splitter = QSplitter(Qt.Orientation.Vertical)
         self.main_splitter.setHandleWidth(8)
@@ -731,12 +829,17 @@ class SteamScreenshotsViewer(QMainWindow):
         preview_layout = QHBoxLayout(self.preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Details area
-        self.details_widget = QWidget()
-        self.details_widget.setFixedWidth(250)
-        details_layout = QVBoxLayout(self.details_widget)
+        # Create scrollable area for all details
+        details_scroll = QScrollArea()
+        details_scroll.setWidgetResizable(True)
+        details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        details_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         
-        # Game name
+        # Create container for all details
+        details_container = QWidget()
+        details_container_layout = QVBoxLayout(details_container)
+        
+        # Game name section
         game_name_widget = QWidget()
         game_name_layout = QHBoxLayout(game_name_widget)
         game_name_layout.setContentsMargins(5, 0, 5, 0)
@@ -766,13 +869,13 @@ class SteamScreenshotsViewer(QMainWindow):
             }
         """)
         self.edit_game_name_button.clicked.connect(self.edit_game_name)
-        self.edit_game_name_button.hide()  # Initially hidden
+        self.edit_game_name_button.hide()
         
         game_name_layout.addWidget(self.game_name_label)
         game_name_layout.addWidget(self.edit_game_name_button)
-        details_layout.addWidget(game_name_widget)
+        details_container_layout.addWidget(game_name_widget)
         
-        # Filename edit section
+        # Filename section
         filename_widget = QWidget()
         filename_layout = QHBoxLayout(filename_widget)
         filename_layout.setContentsMargins(5, 0, 5, 0)
@@ -807,26 +910,22 @@ class SteamScreenshotsViewer(QMainWindow):
         
         filename_layout.addWidget(self.filename_edit)
         filename_layout.addWidget(self.save_filename_button)
-        details_layout.addWidget(filename_widget)
+        details_container_layout.addWidget(filename_widget)
         
         # File details
         self.date_label = QLabel()
         self.date_label.setStyleSheet("color: #c7d5e0; padding: 5px;")
-        details_layout.addWidget(self.date_label)
+        details_container_layout.addWidget(self.date_label)
         
         self.resolution_label = QLabel()
         self.resolution_label.setStyleSheet("color: #c7d5e0; padding: 5px;")
-        details_layout.addWidget(self.resolution_label)
+        details_container_layout.addWidget(self.resolution_label)
         
         self.file_size_label = QLabel()
         self.file_size_label.setStyleSheet("color: #c7d5e0; padding: 5px;")
-        details_layout.addWidget(self.file_size_label)
+        details_container_layout.addWidget(self.file_size_label)
         
         # Action buttons
-        actions_widget = QWidget()
-        actions_layout = QVBoxLayout(actions_widget)
-        actions_layout.setSpacing(5)
-        
         button_style = """
             QPushButton {
                 background-color: #2a475e;
@@ -834,6 +933,7 @@ class SteamScreenshotsViewer(QMainWindow):
                 border: none;
                 border-radius: 3px;
                 padding: 8px;
+                min-width: 120px;
                 text-align: left;
             }
             QPushButton:hover {
@@ -845,20 +945,26 @@ class SteamScreenshotsViewer(QMainWindow):
         self.open_location_button = QPushButton("📁 Open File Location")
         self.open_location_button.setStyleSheet(button_style)
         self.open_location_button.clicked.connect(self.open_file_location)
-        actions_layout.addWidget(self.open_location_button)
+        details_container_layout.addWidget(self.open_location_button)
         
         self.copy_path_button = QPushButton("📋 Copy Image")
         self.copy_path_button.setStyleSheet(button_style)
         self.copy_path_button.clicked.connect(self.copy_image)
-        actions_layout.addWidget(self.copy_path_button)
+        details_container_layout.addWidget(self.copy_path_button)
         
         self.open_paint_button = QPushButton("🎨 Open in Paint")
         self.open_paint_button.setStyleSheet(button_style)
         self.open_paint_button.clicked.connect(self.open_in_paint)
-        actions_layout.addWidget(self.open_paint_button)
+        details_container_layout.addWidget(self.open_paint_button)
         
-        details_layout.addWidget(actions_widget)
-        details_layout.addStretch()
+        # Add stretch to push content up
+        details_container_layout.addStretch()
+        
+        # Set the container as the scroll area's widget
+        details_scroll.setWidget(details_container)
+        
+        # Add scroll area to the preview layout
+        preview_layout.addWidget(details_scroll)
         
         # Preview area
         preview_frame = QFrame()
@@ -872,19 +978,12 @@ class SteamScreenshotsViewer(QMainWindow):
         """)
         preview_frame_layout = QVBoxLayout(preview_frame)
         
-        self.preview_scroll = QScrollArea()
-        self.preview_scroll.setWidgetResizable(True)
-        self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.preview_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_scroll.setWidget(self.preview_label)
-        
-        preview_frame_layout.addWidget(self.preview_scroll)
+        self.preview_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        preview_frame_layout.addWidget(self.preview_label)
         
         # Add details and preview to container
-        preview_layout.addWidget(self.details_widget)
         preview_layout.addWidget(preview_frame, stretch=1)
         
         # Add widgets to splitter
@@ -892,6 +991,7 @@ class SteamScreenshotsViewer(QMainWindow):
         self.main_splitter.addWidget(self.preview_container)
         
         # Add splitter to main layout
+        self.main_layout.addWidget(header_widget)
         self.main_layout.addWidget(self.main_splitter)
         
         # Initially hide preview container
@@ -949,18 +1049,18 @@ class SteamScreenshotsViewer(QMainWindow):
         """)
         
         # Schedule screenshot loading
-        QTimer.singleShot(100, self.load_screenshots)
+        QTimer.singleShot(100, lambda: self.populate_screenshots(self.load_screenshot_paths()))
         
         # Connect resize event
-        self.preview_scroll.resizeEvent = self.on_preview_resize
+        self.preview_label.resizeEvent = self.on_preview_resize
         
         # Connect preview click event
         self.preview_label.mousePressEvent = self.on_preview_clicked
         
-        # Add sort order combo to toolbar
-        self.sort_order_combo.currentTextChanged.connect(self.apply_sort)
-        header_layout.addWidget(self.sort_order_combo)
         self.load_preferences()
+        
+        # Initial sort after everything is initialized
+        self.sort_game_tabs()
     
     def save_filename(self):
         if not self.current_screenshot:
@@ -980,7 +1080,28 @@ class SteamScreenshotsViewer(QMainWindow):
                 
             os.rename(self.current_screenshot, new_path)
             self.current_screenshot = new_path
-            self.refresh_screenshots()
+            
+            # Update the current item's data
+            current_item = self.list_widget.currentItem()
+            if current_item:
+                current_item.setData(Qt.ItemDataRole.UserRole, new_path)
+                
+                # Update in game-specific tab if it exists
+                try:
+                    game_id = new_path.split("remote\\")[1].split("\\")[0]
+                    if game_id in self.game_tabs:
+                        game_list = self.game_tabs[game_id]
+                        for i in range(game_list.count()):
+                            if game_list.item(i).data(Qt.ItemDataRole.UserRole) == self.current_screenshot:
+                                game_list.item(i).setData(Qt.ItemDataRole.UserRole, new_path)
+                                break
+                except Exception:
+                    pass
+            
+            # Show toast notification
+            toast = Toast(self)
+            toast.show_message("Filename saved successfully!")
+            
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to rename file: {str(e)}")
     
@@ -998,24 +1119,34 @@ class SteamScreenshotsViewer(QMainWindow):
         event.accept()
     
     def update_preview(self, screenshot_path):
-        if not screenshot_path:
+        if not screenshot_path or not os.path.exists(screenshot_path):
+            self.preview_label.clear()
             return
-            
-        pixmap = QPixmap(screenshot_path)
-        scaled_pixmap = pixmap.scaled(
-            self.preview_scroll.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
         
-        # Create fade-in animation
-        self.preview_label.setPixmap(scaled_pixmap)
-        fade_effect = QPropertyAnimation(self.preview_label, b"windowOpacity")
-        fade_effect.setDuration(200)
-        fade_effect.setStartValue(0.0)
-        fade_effect.setEndValue(1.0)
-        fade_effect.setEasingCurve(QEasingCurve.Type.OutCubic)
-        fade_effect.start()
+        try:
+            pixmap = QPixmap(screenshot_path)
+            if pixmap.isNull():
+                raise Exception("Failed to load image")
+            
+            # Scale pixmap to fit within the frame while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                self.preview_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            self.preview_label.setPixmap(scaled_pixmap)
+            
+            # Create fade-in animation
+            fade_effect = QPropertyAnimation(self.preview_label, b"windowOpacity")
+            fade_effect.setDuration(200)
+            fade_effect.setStartValue(0.0)
+            fade_effect.setEndValue(1.0)
+            fade_effect.setEasingCurve(QEasingCurve.Type.OutCubic)
+            fade_effect.start()
+        except Exception as e:
+            self.logger.error(f"Error updating preview: {e}")
+            self.preview_label.setText("Preview unavailable")
 
     def on_screenshot_clicked(self, item):
         screenshot_path = item.data(Qt.ItemDataRole.UserRole)
@@ -1026,7 +1157,14 @@ class SteamScreenshotsViewer(QMainWindow):
             self.preview_container.hide()
             self.current_screenshot = None
             return
-            
+        
+        # Check if file still exists
+        if not os.path.exists(screenshot_path):
+            QMessageBox.warning(self, "File Not Found", 
+                              "The screenshot file was not found. It may have been moved or deleted.")
+            self.remove_missing_screenshot(item)
+            return
+        
         self.current_screenshot = screenshot_path
         
         if screenshot_path:
@@ -1071,135 +1209,71 @@ class SteamScreenshotsViewer(QMainWindow):
 
     def refresh_screenshots(self):
         """Refresh the screenshots list"""
-        self.loading_overlay.show()
-        self.list_widget.clear()
-        # Clear game tabs except "All"
-        while self.tab_widget.count() > 1:
-            self.tab_widget.removeTab(1)
-        self.game_tabs.clear()
-        self.load_screenshots()
+        if hasattr(self, 'loading_overlay') and self.loading_overlay:
+            try:
+                self.loading_overlay.show()
+                self.list_widget.clear()
+                # Clear game tabs except "All"
+                while self.tab_widget.count() > 1:
+                    self.tab_widget.removeTab(1)
+                self.game_tabs.clear()
+                self.populate_screenshots(self.load_screenshot_paths())
+            finally:
+                self.loading_overlay.hide()
 
     def create_game_tab(self, game_id, game_name):
-        """Create a new tab for a game if it doesn't exist"""
-        if game_id not in self.game_tabs:
-            # Create new list widget for the game
-            game_list = QListWidget()
-            game_list.setViewMode(QListWidget.ViewMode.IconMode)
-            game_list.setIconSize(QSize(200, 200))
-            game_list.setSpacing(10)
-            game_list.setMovement(QListWidget.Movement.Static)
-            game_list.itemClicked.connect(self.on_screenshot_clicked)
-            
-            # Create tab widget
-            game_tab = QWidget()
-            game_layout = QVBoxLayout(game_tab)
-            game_layout.addWidget(game_list)
-            
-            # Add tab
-            self.tab_widget.addTab(game_tab, game_name)
-            self.game_tabs[game_id] = game_list
-            
-        return self.game_tabs[game_id]
-
-    def apply_sort(self):
-        """Apply sorting to existing screenshots without reloading"""
-        if not hasattr(self, 'all_screenshots'):
-            return
-            
-        # Get current selection to restore after sort
-        current_selection = self.current_screenshot
+        """Create a new tab for a game with proper ID association"""
+        DebugConsole.log(f"Creating tab for game_id: {game_id} - {game_name}")
         
-        # Clear all lists
-        self.list_widget.clear()
-        for game_list in self.game_tabs.values():
-            game_list.clear()
+        # Only truncate if the full name is longer than 25 characters
+        display_name = game_name if len(game_name) <= 25 else f"{game_name[:25]}..."
         
-        # Sort and repopulate
-        screenshots = self.get_sorted_screenshots(self.all_screenshots.copy())
-        self.populate_screenshots(screenshots)
+        # Check if tab already exists for this game
+        if game_id in self.game_tabs:
+            DebugConsole.log(f"Tab already exists for {game_id}")
+            return self.game_tabs[game_id]
+            
+        # Create new list widget for the game
+        game_list = QListWidget()
+        game_list.setViewMode(QListWidget.ViewMode.IconMode)
+        game_list.setIconSize(QSize(200, 200))
+        game_list.setSpacing(10)
+        game_list.setMovement(QListWidget.Movement.Static)
+        game_list.itemClicked.connect(self.on_screenshot_clicked)
         
-        # Restore selection if it still exists
-        if current_selection in [item.data(Qt.ItemDataRole.UserRole) 
-                               for item in self.list_widget.findItems("", Qt.MatchFlag.MatchContains)]:
-            for i in range(self.list_widget.count()):
-                if self.list_widget.item(i).data(Qt.ItemDataRole.UserRole) == current_selection:
-                    self.list_widget.setCurrentRow(i)
-                    break
-
-    def get_sorted_screenshots(self, screenshots):
-        sort_order = self.sort_order_combo.currentText()
-        if sort_order == "Most Recent":
-            return sorted(screenshots, key=lambda x: os.path.getmtime(x), reverse=True)
-        elif sort_order == "Oldest":
-            return sorted(screenshots, key=lambda x: os.path.getmtime(x))
-        elif sort_order == "By Size":
-            return sorted(screenshots, key=lambda x: os.path.getsize(x), reverse=True)
-        return screenshots
-
-    def load_screenshots(self):
-        self.logger.debug("Loading screenshots...")
-        self.loading_overlay.show()
-        self.loading_overlay.set_progress(0, 0)  # Reset progress
+        # Create container widget to hold the list
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(game_list)
         
-        try:
-            # Get the default Steam screenshots path
-            steam_path = os.path.expandvars(r"%ProgramFiles(x86)%\Steam")
-            userdata_path = os.path.join(steam_path, "userdata")
-            
-            if not os.path.exists(userdata_path):
-                self.status_label.setText("Steam userdata folder not found!")
-                self.loading_overlay.close()
-                return
-            
-            # Find all screenshot folders
-            screenshots = []
-            for user_folder in os.listdir(userdata_path):
-                screenshots_path = os.path.join(userdata_path, user_folder, "760", "remote", "*", "screenshots")
-                screenshot_folders = glob.glob(screenshots_path)
-                
-                for folder in screenshot_folders:
-                    screenshots.extend(glob.glob(os.path.join(folder, "*.jpg")))
-                    screenshots.extend(glob.glob(os.path.join(folder, "*.png")))
-            
-            if not screenshots:
-                self.status_label.setText("No screenshots found!")
-                self.loading_overlay.close()
-                return
-            
-            # Store original list for sorting
-            self.all_screenshots = screenshots.copy()
-            screenshots = self.get_sorted_screenshots(screenshots)
-            self.populate_screenshots(screenshots)
-            
-        except Exception as e:
-            self.status_label.setText(f"Error loading screenshots: {str(e)}")
-            self.logger.error(f"Error loading screenshots: {str(e)}")
-            if hasattr(self, 'loading_overlay'):
-                self.loading_overlay.close()
+        # Add tab and store reference
+        tab_index = self.tab_widget.addTab(container, display_name)
+        self.game_tabs[game_id] = game_list
+        
+        DebugConsole.log(f"Created tab at index {tab_index} for {game_id}")
+        
+        return game_list
 
     def populate_screenshots(self, screenshots):
-        """Populate the list widgets with the given screenshots"""
-        total_screenshots = len(screenshots)
+        """Populate list widgets with screenshots"""
+        DebugConsole.log(f"Populating {len(screenshots)} screenshots")
         
         for i, screenshot in enumerate(screenshots, 1):
-            # Update progress
-            if hasattr(self, 'loading_overlay'):
-                self.loading_overlay.set_progress(i, total_screenshots)
-            QApplication.processEvents()  # Keep UI responsive
-            
-            # Create item for main list
-            item = QListWidgetItem()
-            pixmap = QPixmap(screenshot)
-            icon = QIcon(pixmap)
-            item.setIcon(icon)
-            item.setData(Qt.ItemDataRole.UserRole, screenshot)
-            self.list_widget.addItem(item)
-            
-            # Add to game tab
             try:
+                # Extract game_id from path
                 game_id = screenshot.split("remote\\")[1].split("\\")[0]
-                game_name = self.game_db.get_game_name(game_id)
-                game_list = self.create_game_tab(game_id, game_name)
+                
+                # Create list item
+                item = QListWidgetItem()
+                pixmap = QPixmap(screenshot)
+                icon = QIcon(pixmap)
+                item.setIcon(icon)
+                item.setData(Qt.ItemDataRole.UserRole, screenshot)
+                self.list_widget.addItem(item)
+                
+                # Add to game tab
+                game_list = self.create_game_tab(game_id, self.game_db.get_game_name(game_id))
                 
                 # Create item for game tab
                 game_item = QListWidgetItem()
@@ -1214,13 +1288,19 @@ class SteamScreenshotsViewer(QMainWindow):
         
         if hasattr(self, 'loading_overlay'):
             self.loading_overlay.close()
+            
+        self.sort_game_tabs()  # Add this line to sort tabs after population
 
     def copy_image(self):
         if self.current_screenshot:
             clipboard = QGuiApplication.clipboard()
             pixmap = QPixmap(self.current_screenshot)
             clipboard.setPixmap(pixmap)
-    
+            
+            # Show toast notification
+            toast = Toast(self)
+            toast.show_message("Image copied to clipboard!")
+
     def on_preview_clicked(self, event):
         if self.current_screenshot:
             self.full_screen_preview.show_image(self.current_screenshot)
@@ -1263,21 +1343,249 @@ class SteamScreenshotsViewer(QMainWindow):
         config_path = os.path.join(os.getenv('APPDATA'), 'Game Screenshot Viewer', 'config.json')
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, 'w') as f:
-            json.dump({"sort_order": self.sort_order_combo.currentText()}, f)
+            json.dump({
+                "game_sort_order": self.game_sort_combo.currentText(),
+                "screenshot_sort_order": self.screenshot_sort_combo.currentText()
+            }, f)
 
     def load_preferences(self):
         config_path = os.path.join(os.getenv('APPDATA'), 'Game Screenshots', 'config.json')
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 config = json.load(f)
-                if "sort_order" in config:
-                    index = self.sort_order_combo.findText(config["sort_order"])
+                if "game_sort_order" in config:
+                    index = self.game_sort_combo.findText(config["game_sort_order"])
                     if index >= 0:
-                        self.sort_order_combo.setCurrentIndex(index)
+                        self.game_sort_combo.setCurrentIndex(index)
+                if "screenshot_sort_order" in config:
+                    index = self.screenshot_sort_combo.findText(config["screenshot_sort_order"])
+                    if index >= 0:
+                        self.screenshot_sort_combo.setCurrentIndex(index)
 
     def closeEvent(self, event):
         self.save_preferences()
         super().closeEvent(event)
+
+    def remove_missing_screenshot(self, item):
+        """Remove a screenshot that no longer exists from the UI"""
+        screenshot_path = item.data(Qt.ItemDataRole.UserRole)
+        
+        # Remove from main list
+        row = self.list_widget.row(item)
+        self.list_widget.takeItem(row)
+        
+        # Remove from game-specific tabs if it exists
+        try:
+            game_id = screenshot_path.split("remote\\")[1].split("\\")[0]
+            if game_id in self.game_tabs:
+                game_list = self.game_tabs[game_id]
+                for i in range(game_list.count()):
+                    if game_list.item(i).data(Qt.ItemDataRole.UserRole) == screenshot_path:
+                        game_list.takeItem(i)
+                        break
+        except Exception as e:
+            self.logger.error(f"Error removing missing screenshot from game tab: {e}")
+        
+        # Update status
+        self.status_label.setText(f"Removed missing screenshot: {os.path.basename(screenshot_path)}")
+
+    def start_missing_screenshots_check(self):
+        """Start a timer to periodically check for missing screenshots"""
+        self.missing_check_timer = QTimer(self)
+        self.missing_check_timer.timeout.connect(self.check_for_missing_screenshots)
+        self.missing_check_timer.start(30000)  # Check every 30 seconds
+
+    def check_for_missing_screenshots(self):
+        """Check all displayed screenshots still exist"""
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            screenshot_path = item.data(Qt.ItemDataRole.UserRole)
+            if not os.path.exists(screenshot_path):
+                self.remove_missing_screenshot(item)
+
+    def get_sorted_screenshots(self, screenshots):
+        sort_order = self.game_sort_combo.currentText()
+        if sort_order == "Most Recent":
+            return sorted(screenshots, key=lambda x: os.path.getmtime(x), reverse=True)
+        elif sort_order == "A to Z":
+            return sorted(screenshots, key=lambda x: x)
+        elif sort_order == "Z to A":
+            return sorted(screenshots, key=lambda x: x, reverse=True)
+        elif sort_order == "Screenshot Count":
+            return sorted(screenshots, key=lambda x: os.path.getsize(x), reverse=True)
+        return screenshots
+
+    def sort_game_tabs(self):
+        """Sort the game tabs based on the current sort order"""
+        if self.is_sorting:
+            return
+            
+        self.is_sorting = True
+        self.loading_overlay.show()
+        try:
+            DebugConsole.log("\n=== Starting tab sort operation ===")
+            
+            sort_order = self.game_sort_combo.currentText()
+            DebugConsole.log(f"Sort order: {sort_order}")
+            
+            if self.tab_widget.count() <= 1:  # Only "All" tab exists
+                DebugConsole.log("No game tabs to sort")
+                return
+            
+            # Create a list of (game_id, tab_text, widget, screenshot_time) tuples
+            tabs_info = []
+            for game_id, game_list in self.game_tabs.items():
+                newest_time = 0
+                oldest_time = float('inf')
+                # Find newest and oldest screenshot times for this game
+                for i in range(game_list.count()):
+                    screenshot_path = game_list.item(i).data(Qt.ItemDataRole.UserRole)
+                    if os.path.exists(screenshot_path):
+                        mtime = os.path.getmtime(screenshot_path)
+                        if mtime > newest_time:
+                            newest_time = mtime
+                        if mtime < oldest_time:
+                            oldest_time = mtime
+                
+                for i in range(1, self.tab_widget.count()):
+                    if self.tab_widget.widget(i) == game_list.parent():
+                        tabs_info.append((game_id, self.tab_widget.tabText(i), self.tab_widget.widget(i), newest_time, oldest_time))
+                        break
+            
+            # Sort based on current sort order
+            if sort_order == "A to Z":
+                tabs_info.sort(key=lambda x: x[1].lower())
+            elif sort_order == "Z to A":
+                tabs_info.sort(key=lambda x: x[1].lower(), reverse=True)
+            elif sort_order == "Newest":
+                tabs_info.sort(key=lambda x: x[3], reverse=True)  # Sort by newest screenshot time
+            elif sort_order == "Oldest":
+                tabs_info.sort(key=lambda x: x[4])  # Sort by oldest screenshot time
+            elif sort_order == "Screenshot Count":
+                tabs_info.sort(key=lambda x: self.game_tabs[x[0]].count(), reverse=True)
+            
+            DebugConsole.log(f"Sorted tabs: {[tab[1] for tab in tabs_info]}")
+            
+            # Rebuild tabs in sorted order
+            current_index = self.tab_widget.currentIndex()
+            for i, (game_id, tab_text, widget, _, _) in enumerate(tabs_info, 1):
+                current_tab_index = self.tab_widget.indexOf(widget)
+                if current_tab_index != i:
+                    self.tab_widget.tabBar().moveTab(current_tab_index, i)
+            if current_index > 0:  # Restore selection if it was a game tab
+                self.tab_widget.setCurrentIndex(current_index)
+            
+            DebugConsole.log("=== Tab sort operation completed ===\n")
+            QApplication.processEvents()  # Force UI update
+        finally:
+            self.loading_overlay.hide()
+            self.is_sorting = False
+
+    def sort_list_widget(self, list_widget, sort_order):
+        """Helper method to sort a QListWidget based on the specified order"""
+        try:
+            # Store the paths and text of all items
+            items_data = []
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole):
+                    items_data.append({
+                        'path': item.data(Qt.ItemDataRole.UserRole),
+                        'text': item.text(),
+                        'icon': item.icon()
+                    })
+            
+            # Get current selection to restore after sorting
+            current_item = list_widget.currentItem()
+            current_path = current_item.data(Qt.ItemDataRole.UserRole) if current_item else None
+            
+            # Sort based on the selected order
+            if sort_order == "Newest":
+                items_data.sort(key=lambda x: os.path.getmtime(x['path']) if os.path.exists(x['path']) else 0, reverse=True)
+            elif sort_order == "Oldest":
+                items_data.sort(key=lambda x: os.path.getmtime(x['path']) if os.path.exists(x['path']) else 0)
+            elif sort_order == "A to Z":
+                items_data.sort(key=lambda x: os.path.basename(x['path']).lower())
+            elif sort_order == "Z to A":
+                items_data.sort(key=lambda x: os.path.basename(x['path']).lower(), reverse=True)
+            elif sort_order == "Largest":
+                items_data.sort(key=lambda x: os.path.getsize(x['path']) if os.path.exists(x['path']) else 0, reverse=True)
+            elif sort_order == "Smallest":
+                items_data.sort(key=lambda x: os.path.getsize(x['path']) if os.path.exists(x['path']) else 0)
+            
+            # Clear and repopulate with new items
+            list_widget.clear()
+            for data in items_data:
+                item = QListWidgetItem(data['icon'], data['text'])
+                item.setData(Qt.ItemDataRole.UserRole, data['path'])
+                list_widget.addItem(item)
+                
+            # Restore selection if it existed
+            if current_path:
+                for i in range(list_widget.count()):
+                    if list_widget.item(i).data(Qt.ItemDataRole.UserRole) == current_path:
+                        list_widget.setCurrentItem(list_widget.item(i))
+                        break
+        except Exception as e:
+            DebugConsole.error(f"Error sorting list: {e}")
+            raise
+
+    def load_screenshot_paths(self):
+        """Load and return all screenshot paths"""
+        DebugConsole.log("Loading screenshot paths")
+        try:
+            # Get the default Steam screenshots path
+            steam_path = os.path.expandvars(r"%ProgramFiles(x86)%\\Steam")
+            userdata_path = os.path.join(steam_path, "userdata")
+            
+            if not os.path.exists(userdata_path):
+                self.status_label.setText("Steam userdata folder not found!")
+                return []
+            
+            # Find all screenshot folders
+            screenshots = []
+            for user_folder in os.listdir(userdata_path):
+                screenshots_path = os.path.join(userdata_path, user_folder, "760", "remote", "*", "screenshots")
+                screenshot_folders = glob.glob(screenshots_path)
+                
+                for folder in screenshot_folders:
+                    screenshots.extend(glob.glob(os.path.join(folder, "*.jpg")))
+                    screenshots.extend(glob.glob(os.path.join(folder, "*.png")))
+            
+            return screenshots
+            
+        except Exception as e:
+            DebugConsole.error(f"Error loading screenshot paths: {e}")
+            return []
+
+    def sort_screenshots(self):
+        """Sort screenshots in all lists based on the current sort order"""
+        if self.is_sorting:
+            return
+            
+        self.is_sorting = True
+        self.loading_overlay.show()
+        try:
+            DebugConsole.log("\n=== Starting screenshot sort operation ===")
+            
+            sort_order = self.screenshot_sort_combo.currentText()
+            DebugConsole.log(f"Screenshot sort order: {sort_order}")
+            
+            # Sort the main 'All' list
+            self.sort_list_widget(self.list_widget, sort_order)
+            
+            # Sort all game-specific lists
+            for game_list in self.game_tabs.values():
+                self.sort_list_widget(game_list, sort_order)
+            
+            DebugConsole.log("=== Screenshot sort operation completed ===\n")
+            QApplication.processEvents()  # Force UI update
+        except Exception as e:
+            DebugConsole.error(f"Error during screenshot sorting: {e}")
+            QMessageBox.warning(self, "Sort Error", f"Failed to sort screenshots: {str(e)}")
+        finally:
+            self.loading_overlay.hide()
+            self.is_sorting = False
 
 # Simple main function similar to the working examples
 app = QApplication(sys.argv)
