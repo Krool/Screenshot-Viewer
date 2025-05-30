@@ -1067,27 +1067,71 @@ class SteamScreenshotsViewer(QMainWindow):
         if not self.current_screenshot:
             return
             
-        new_name = self.filename_edit.text()
+        new_name = self.filename_edit.text().strip()
         if not new_name:
+            return
+            
+        # Validate filename
+        invalid_chars = set('/\\:*?"<>|')
+        reserved_names = {
+            'CON', 'PRN', 'AUX', 'NUL',
+            'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+            'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+        }
+        
+        # Check for invalid characters
+        if any(char in new_name for char in invalid_chars):
+            toast = Toast(self)
+            toast.show_message("Error: Filename cannot contain /\\:*?\"<>|")
+            return
+            
+        # Check for reserved names
+        base_name = os.path.splitext(new_name)[0].upper()
+        if base_name in reserved_names:
+            toast = Toast(self)
+            toast.show_message("Error: Reserved system name (e.g., CON, PRN)")
+            return
+            
+        # Check length limits
+        if len(new_name) > 255:
+            toast = Toast(self)
+            toast.show_message("Error: Filename too long (max 255 chars)")
+            return
+        if len(new_name) < 3:
+            toast = Toast(self)
+            toast.show_message("Error: Filename too short (min 3 chars)")
+            return
+            
+        # Check for trailing periods/spaces
+        if new_name[-1] in ('.', ' '):
+            toast = Toast(self)
+            toast.show_message("Error: Filename cannot end with space or period")
             return
             
         try:
             dir_path = os.path.dirname(self.current_screenshot)
             new_path = os.path.join(dir_path, new_name)
             
+            # If name hasn't changed
+            if os.path.normpath(new_path) == os.path.normpath(self.current_screenshot):
+                toast = Toast(self)
+                toast.show_message("Filename saved")
+                return
+                
+            # If file exists
             if os.path.exists(new_path):
-                QMessageBox.warning(self, "Error", "A file with this name already exists.")
+                toast = Toast(self)
+                toast.show_message("Filename saved (already exists)")
                 return
                 
             os.rename(self.current_screenshot, new_path)
             self.current_screenshot = new_path
             
-            # Update the current item's data
+            # Update item data
             current_item = self.list_widget.currentItem()
             if current_item:
                 current_item.setData(Qt.ItemDataRole.UserRole, new_path)
                 
-                # Update in game-specific tab if it exists
                 try:
                     game_id = new_path.split("remote\\")[1].split("\\")[0]
                     if game_id in self.game_tabs:
@@ -1099,12 +1143,12 @@ class SteamScreenshotsViewer(QMainWindow):
                 except Exception:
                     pass
             
-            # Show toast notification
             toast = Toast(self)
             toast.show_message("Filename saved successfully!")
             
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to rename file: {str(e)}")
+            toast = Toast(self)
+            toast.show_message(f"Error: {str(e)}")
     
     def open_file_location(self):
         if self.current_screenshot:

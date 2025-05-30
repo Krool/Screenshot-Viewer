@@ -1,13 +1,71 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
 *.so
 .Python
 env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyInstaller
+*.spec
+*.log
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.pid
+*.DS_Store
+*.db
+*.sqlite
+*.sqlite3
+
+# Steam and Cache
+cache/
+steam_games_cache.json
+custom_games_cache.json
+debug.log
+
+# Build and Installer
+installer/
+dist/
+*.exe
+*.msi
+*.dmg
+*.app
+*.deb
+*.rpm
+
+# OS-specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Testing
+.pytest_cache/
+coverage.xml
+
+# Virtual Environment
+env/
 build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -17,8 +75,8 @@ parts/
 sdist/
 var/
 wheels/
-*.egg-info/
 .installed.cfg
+*.egg-info/
 *.egg
 
 # Steam games cache
