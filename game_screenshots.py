@@ -683,6 +683,12 @@ class SteamScreenshotsViewer(QMainWindow):
         self.is_sorting = False  # Add sorting lock flag
         self.logger = logging.getLogger('SteamScreenshotsViewer')
         
+        # Set the window icon
+        try:
+            self.setWindowIcon(QIcon("app_icon.ico"))
+        except Exception as e:
+            self.logger.error(f"Failed to load window icon: {e}")
+        
         # Initialize attributes
         self.current_screenshot = None  # Track selected screenshot
         self.game_db = SteamGameDatabase()
